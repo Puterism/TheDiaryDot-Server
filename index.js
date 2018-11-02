@@ -8,6 +8,7 @@ import helmet from 'helmet'
 import passport from 'passport'
 import passportJWT from 'passport-jwt'
 import jwt from 'jsonwebtoken'
+import uuid from 'uuid/v4'
 const FacebookStrategy = require('passport-facebook').Strategy
 const JWTStrategy = passportJWT.Strategy
 const ExtractJwt = passportJWT.ExtractJwt
@@ -20,24 +21,26 @@ mongoose.connect('mongodb://localhost:27017/TheDiaryDot', { useNewUrlParser: tru
 const Schema = mongoose.Schema
 
 const diarySchema = new Schema({
+  _id: {type: String},
   date: {type: String},
   content: {type: String},
   userId: {type: String},
   savedDateTime: {type: Date},
-}, {collection: 'diaries'})
+  lastSavedDateTime: {type: Date}
+}, { _id: false, collection: 'diaries' })
 
 const tempDiarySchema = new Schema({
   date: {type: String},
   content: {type: String},
   userId: {type: String},
   savedDateTime: {type: Date},
-}, {collection: 'temp_diary'})
+}, { _id: false, collection: 'temp_diary'})
 
 const userSchema = new Schema({
   facebookID: {type: String}
 })
 
-const Diaries = mongoose.model('diaries', diarySchema)
+const Diary = mongoose.model('diaries', diarySchema)
 const TempDiary = mongoose.model('temp_diary', tempDiarySchema)
 const User = mongoose.model('users', userSchema)
 
@@ -52,40 +55,38 @@ const typeDefs = `
     content: String!
     userId: String!
     savedDateTime: String!
+    lastSavedDateTime: String!
   }
   
   type Query {
-    getDiary(_id: String): Diary
-    getDiariesByMonth(year: String, month: String, userId: String): [Diary] @auth
+    getDiariesByMonth(year: String, month: String, userId: String): [Diary]! @auth
     getTempDiary(userId: String): Diary @auth
   }
+  
   type Mutation {
-    addDiary(date: String, content: String, userId: String): Diary @auth
+    addDiary(date: String, content: String, userId: String): Boolean! @auth
     deleteDiary(_id: String, userId: String): Boolean! @auth
     deleteDiaryAll(userId: String): Boolean! @auth
-    addTempDiary(date: String, content: String, userId: String): Diary @auth
+    editDiary(_id: String, date: String, content: String, userId: String): Boolean! @auth
+    addTempDiary(date: String, content: String, userId: String): Boolean! @auth
     deleteTempDiary(userId: String): Boolean! @auth
   }
 `
 
 const resolvers = {
   Query: {
-    getDiary: async (_, { _id }) => {
-      const diary = await Diaries.findOne({_id: _id})
-      diary.content = await Buffer.from(diary.content, 'base64').toString('utf8')
-      return diary
-    },
     getDiariesByMonth: async (_, { year, month, userId }, { req }) => {
-      const regexp = new RegExp('\\b(' + year + '-' + month + ')-[\\d][\\d]\\b')
-      const diaries = await Diaries.find((err) => {
+      const regexp = new RegExp(`\\b(${year}-${month})-[\\d][\\d]\\b`)
+      const diaries = await Diary.find((err) => {
         if (err) {
           return false
         }
       }).where('userId').equals(userId).regex('date', regexp)
-      await diaries.forEach(diary => {
+      diaries.forEach(diary => {
         const buf = Buffer.from(diary.content, 'base64')
         diary.content = buf.toString('utf8')
       })
+      
       return diaries
     },
     getTempDiary: async (_, { userId }) => {
@@ -103,28 +104,40 @@ const resolvers = {
   },
   Mutation: {
     addDiary: async (_, { date, content, userId }) => {
-      const diary = new Diaries()
+      const diary = new Diary()
       const buf = Buffer.from(content, 'utf8')
+      diary._id = uuid()
       diary.savedDateTime = new Date().getTime()
       diary.date = date
       diary.content = buf.toString('base64')
       diary.userId = userId
-      return (await diary.save((err) => {
+      await diary.save((err) => {
         if (err) return false
-        return diary
-      }))
+      })
+      return true
     },
     deleteDiary: async (_, { _id, userId }) => {
-      return (await Diaries.deleteOne({ _id: _id, userId: userId }, (err) => {
+      await Diary.deleteOne({ _id: _id, userId: userId }, (err) => {
         if (err) return false
+      })
         return true
-      }))
     },
     deleteDiaryAll: async (_, { userId }) => {
-      return (await Diaries.deleteMany({ userId: userId }, (err) => {
+      await Diary.deleteMany({ userId: userId }, (err) => {
         if (err) return false
-        return true
-      }))
+      })
+      return true
+    },
+    editDiary: async (_, { _id, date, content, userId }) => {
+      const diary = new Diary()
+      const buf = Buffer.from(content, 'utf8')
+      diary.lastSavedDateTime = new Date().getTime()
+      diary.content = buf.toString('base64')
+      diary.date = date
+      await Diary.updateOne({ _id: _id }, { $set: { date: diary.date, content: diary.content, lastSavedDateTime: diary.lastSavedDateTime }}, (err) => {
+        if (err) return false
+      })
+      return true
     },
     addTempDiary: async (_, { date, content, userId }) => {
       await TempDiary.deleteMany({ userId: userId }, (err) => {
@@ -136,16 +149,16 @@ const resolvers = {
       tempDiary.date = date
       tempDiary.content = buf.toString('base64')
       tempDiary.userId = userId
-      return (await tempDiary.save((err) => {
+      await tempDiary.save((err) => {
         if (err) return false
-        return tempDiary
-      }))
+      })
+      return true
     },
     deleteTempDiary: async (_, { userId }) => {
-      return (await TempDiary.deleteMany({ userId: userId }, (err) => {
+      await TempDiary.deleteMany({ userId: userId }, (err) => {
         if (err) return false
-        return true
-      }))
+      })
+      return true
     }
   }
 }
